@@ -1,67 +1,60 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import List
-import models
-from database import get_db
-
 from pydantic import BaseModel
+from typing import List
+from datetime import datetime
 
-router = APIRouter()
+from database import get_db
+from models import Deal, Meeting, DealStage
+
+router = APIRouter(prefix="/deals", tags=["Deals"])
 
 class DealCreate(BaseModel):
-    name: str
-    company_name: str
-    product_name: str
-    value: float = 0.0
+    meeting_id: int
+    stage: DealStage = DealStage.INTRO
+    notes: str = ""
+    assigned_to: str = ""
 
-class DealRead(BaseModel):
-    id: int
-    name: str
-    company_name: str
-    product_name: str
-    value: float
+class DealUpdateStage(BaseModel):
+    stage: DealStage
 
-    class Config:
-        orm_mode = True
-
-@router.post("/", response_model=DealRead)
-def create_deal(payload: DealCreate, db: Session = Depends(get_db)):
-    # get or create company
-    company = db.query(models.Company).filter_by(name=payload.company_name).first()
-    if not company:
-        company = models.Company(name=payload.company_name)
-        db.add(company)
-        db.flush()
-
-    product = db.query(models.Product).filter_by(name=payload.product_name).first()
-    if not product:
-        product = models.Product(name=payload.product_name)
-        db.add(product)
-        db.flush()
-
-    deal = models.Deal(name=payload.name, company=company, product=product, value=payload.value)
-    db.add(deal)
+@router.post("/", response_model=dict)
+def create_deal(deal: DealCreate, db: Session = Depends(get_db)):
+    meeting = db.query(Meeting).filter(Meeting.id == deal.meeting_id).first()
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    new_deal = Deal(
+        meeting_id=deal.meeting_id,
+        stage=deal.stage,
+        notes=deal.notes,
+        assigned_to=deal.assigned_to,
+        assigned_at=datetime.utcnow()
+    )
+    db.add(new_deal)
     db.commit()
-    db.refresh(deal)
+    db.refresh(new_deal)
+    return {"id": new_deal.id, "message": "Deal created"}
 
-    return {
-        "id": deal.id,
-        "name": deal.name,
-        "company_name": company.name,
-        "product_name": product.name,
-        "value": deal.value,
-    }
-
-@router.get("/", response_model=List[DealRead])
+@router.get("/", response_model=List[dict])
 def list_deals(db: Session = Depends(get_db)):
-    deals = db.query(models.Deal).all()
-    result = []
-    for d in deals:
-        result.append({
+    deals = db.query(Deal).all()
+    return [
+        {
             "id": d.id,
-            "name": d.name,
-            "company_name": d.company.name,
-            "product_name": d.product.name,
-            "value": d.value,
-        })
-    return result
+            "meeting_id": d.meeting_id,
+            "stage": d.stage.value,
+            "notes": d.notes,
+            "assigned_to": d.assigned_to,
+            "assigned_at": d.assigned_at.isoformat() if d.assigned_at else None,
+        }
+        for d in deals
+    ]
+
+@router.put("/{deal_id}/stage")
+def update_deal_stage(deal_id: int, stage_update: DealUpdateStage, db: Session = Depends(get_db)):
+    deal = db.query(Deal).filter(Deal.id == deal_id).first()
+    if not deal:
+        raise HTTPException(status_code=404, detail="Deal not found")
+    deal.stage = stage_update.stage
+    db.commit()
+    return {"message": "Deal stage updated"}
